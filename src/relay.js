@@ -18,7 +18,8 @@ import {
 import _ from 'lodash';
 import simplifyAST from './simplifyAST';
 
-import {Model} from 'sequelize';
+import {Model, Sequelize} from 'sequelize';
+const [seqMajVer] = Sequelize.version.split('.');
 
 function getModelOfInstance(instance) {
   return instance instanceof Model ? instance.constructor : instance.Model;
@@ -259,13 +260,21 @@ export function createConnectionResolver({
 
       if (args.after || args.before) {
         let cursor = fromCursor(args.after || args.before);
-        let startIndex = Number(cursor.index);
 
-        if (startIndex >= 0) options.offset = startIndex + 1;
+        if (args.orderBy) {
+          let startIndex = Number(cursor.index);
+
+          if (startIndex >= 0) options.offset = startIndex + 1;
+        } else {
+          let operator = args.after ?
+            (seqMajVer <= 3 ? '$gt' : Sequelize.Op.gt) : (seqMajVer <= 3 ? '$lt' : Sequelize.Op.lt)
+          options.where[model.primaryKeyAttribute] = { [operator]: cursor.id };
+        }
       }
 
       options.attributes.unshift(model.primaryKeyAttribute); // Ensure the primary key is always the first selected attribute
       options.attributes = _.uniq(options.attributes);
+
       return before(options, args, context, info);
     },
     after: async function (values, args, context, info) {
@@ -321,11 +330,14 @@ export function createConnectionResolver({
         } else {
           index = 0;
         }
-
-        hasNextPage = index + 1 + count <= fullCount;
+        if (args.orderBy) {
+          hasNextPage = index + 1 + count <= fullCount;
+        } else {
+          hasNextPage = count < fullCount;
+        }
         hasPreviousPage = index - count >= 0;
 
-        if (args.last) {
+        if (args.last && args.orderBy) {
           [hasNextPage, hasPreviousPage] = [hasPreviousPage, hasNextPage];
         }
       }

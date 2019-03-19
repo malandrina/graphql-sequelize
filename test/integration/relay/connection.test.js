@@ -4,6 +4,7 @@ import {expect} from 'chai';
 import Sequelize from 'sequelize';
 import sinon from 'sinon';
 import attributeFields from '../../../src/attributeFields';
+import {base64, unbase64} from '../../../src/base64.js';
 import resolver from '../../../src/resolver';
 import {uniq, property, sortBy} from 'lodash';
 import { Promise, sequelize } from '../../support/helper';
@@ -1065,7 +1066,6 @@ describe('relay', function () {
       expect(firstResult.data.user.tasks.edges[2].node.name).to.equal(secondResult.data.user.tasks.edges[0].node.name);
     });
 
-
     it('should support prefetching two nested connections', async function () {
       let sqlSpy = sinon.spy();
 
@@ -1316,5 +1316,79 @@ describe('relay', function () {
         tasks.slice(0, 2).map(task => task.get('id').toString()).sort()
       );
     });
+
+    it('should use cursor.id for stable cursor navigation when not using orderBy', async function () {
+      let viewer = await this.User.create();
+      let task1 = await viewer.createTask({ id: ++this.taskId, name: 'task1' })
+      let task2 = await viewer.createTask({ id: ++this.taskId, name: 'task2' })
+      let task3 = await viewer.createTask({ id: ++this.taskId, name: 'task3' })
+      let task4 = await viewer.createTask({ id: ++this.taskId, name: 'task4' })
+      let after = base64(JSON.stringify([task2.id, 1]))
+      let result = {}
+      let query = async (after) => {
+        return await graphql(this.schema, `
+          {
+            viewer {
+              tasks(first: 1, after: "${after}") {
+                edges {
+                  cursor
+                  node {
+                    id
+                    name
+                  }
+                }
+                pageInfo {
+                  hasNextPage
+                  hasPreviousPage
+                }
+              }
+            }
+          }
+        `, null, {
+          viewer: viewer
+        });
+      }
+
+      result = await query(after)
+      expect(result.data.viewer.tasks.edges.length).to.equal(1);
+      expect(result.data.viewer.tasks.edges[0].node.name).to.equal('task3')
+      let task3Cursor = result.data.viewer.tasks.edges[0].cursor
+      expect(result.data.viewer.tasks.pageInfo.hasNextPage).to.equal(true)
+      expect(result.data.viewer.tasks.pageInfo.hasPreviousPage).to.equal(true)
+
+      await task2.destroy()
+
+      result = await query(result.data.viewer.tasks.edges[0].cursor)
+      expect(result.data.viewer.tasks.edges.length).to.equal(1);
+      expect(result.data.viewer.tasks.edges[0].node.name).to.equal('task4')
+      expect(result.data.viewer.tasks.pageInfo.hasNextPage).to.equal(false)
+      expect(result.data.viewer.tasks.pageInfo.hasPreviousPage).to.equal(true)
+
+      result = await graphql(this.schema, `
+        {
+          viewer {
+            tasks(last: 1, before: "${task3Cursor}") {
+              edges {
+                cursor
+                node {
+                  id
+                  name
+                }
+              }
+              pageInfo {
+                hasNextPage
+                hasPreviousPage
+              }
+            }
+          }
+        }
+      `, null, {
+        viewer: viewer
+      });
+      expect(result.data.viewer.tasks.edges.length).to.equal(1);
+      expect(result.data.viewer.tasks.edges[0].node.name).to.equal('task1')
+      expect(result.data.viewer.tasks.pageInfo.hasNextPage).to.equal(false)
+      expect(result.data.viewer.tasks.pageInfo.hasPreviousPage).to.equal(true)
+    })
   });
 });
